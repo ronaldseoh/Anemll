@@ -370,102 +370,102 @@ def make_causal_mask(length, start):
     mask[:, :, col_indices <= (row_indices + start)] = 0
     return mask
 
-def run_prefill(embed_model, ffn_models, input_ids, context_pos, context_length, batch_size=64, state=None):
+def run_prefill(embed_model, ffn_models, input_ids, current_pos, context_length, batch_size, state):
     """Run prefill on the input sequence."""
-    # Create causal mask
-    causal_mask = make_causal_mask(context_length, 0)
-    causal_mask = torch.tensor(causal_mask, dtype=torch.float16)
+    #print(f"[DEBUG] Running prefill from 0 to {current_pos}")
     
     # Process in batches
     batch_pos = 0
-    while batch_pos < context_pos:
-        batch_end = min(batch_pos + batch_size, context_pos)
+    while batch_pos < current_pos:
+        batch_end = min(batch_pos + batch_size, current_pos)
         current_batch_size = batch_end - batch_pos
+        
+        #print(f"[DEBUG] Prefill batch {batch_pos}-{batch_end} (size={current_batch_size})")
         
         # Get current batch
         batch_input = input_ids[:, batch_pos:batch_end]
         
-        # Always pad to full batch size for prefill
+        # Pad to full batch size
         batch_input = F.pad(
             batch_input,
             (0, batch_size - current_batch_size),
             value=0
         )
         
-        # Generate position IDs for full batch size
-        position_ids = torch.arange(batch_size, dtype=torch.int32)  # Changed: Always use full batch size
-        batch_causal_mask = causal_mask[:, :, :batch_size, :]  # Changed: Use full batch size
+        # Generate position IDs for this batch
+        position_ids = torch.arange(batch_pos, batch_pos + batch_size, dtype=torch.int32)
+        
+        # Create causal mask for this batch
+        causal_mask = make_causal_mask(context_length, 0)  # Always start from 0 for prefill
+        causal_mask = torch.tensor(causal_mask, dtype=torch.float16)
+        batch_causal_mask = causal_mask[:, :, batch_pos:batch_pos + batch_size, :]
         
         # Run embeddings
         hidden_states = torch.from_numpy(
             embed_model.predict({'input_ids': batch_input.numpy()})['hidden_states']
         )
         
-        # Run through FFN chunks with state
+        # Run through FFN chunks
         for ffn_model in ffn_models:
             if isinstance(ffn_model, dict):
                 inputs = {
-                    'hidden_states': hidden_states.numpy(),  # [1, 64, hidden_size]
-                    'position_ids': position_ids.numpy(),    # [64]
-                    'causal_mask': batch_causal_mask.numpy(), # [1, 1, 64, context_length]
-                    'current_pos': np.array([batch_pos], dtype=np.int32)  # [1]
+                    'hidden_states': hidden_states.numpy(),
+                    'position_ids': position_ids.numpy(),
+                    'causal_mask': batch_causal_mask.numpy(),
+                    'current_pos': np.array([batch_pos], dtype=np.int32)
                 }
                 output = ffn_model['prefill'].predict(inputs, state)
                 hidden_states = torch.from_numpy(output['output_hidden_states'])
         
         batch_pos = batch_end
     
-    return torch.tensor([context_pos], dtype=torch.int32)
+    return torch.tensor([current_pos], dtype=torch.int32)
 
 def generate_next_token(embed_model, ffn_models, lmhead_model, input_ids, pos, context_length, state=None, temperature=0.0):
     """Generate the next token."""
     # Get current token
-    current_token = input_ids[:, pos-1:pos]  # [1, 1]
+    current_token = input_ids[:, pos-1:pos]
     
     # Run embeddings
     hidden_states = torch.from_numpy(
         embed_model.predict({'input_ids': current_token.numpy()})['hidden_states']
-    )  # [1, 1, hidden_size]
+    )
     
     # Create masks
     update_mask = torch.zeros((1, 1, context_length, 1), dtype=torch.float16)
     update_mask[0, 0, pos-1, 0] = 1.0
-    position_ids = torch.tensor([pos-1], dtype=torch.int32)  # [1]
-    causal_mask = make_causal_mask(context_length, 0)
-    causal_mask = torch.tensor(causal_mask[:, :, pos-1:pos, :], dtype=torch.float16)  # [1, 1, 1, context_length]
+    position_ids = torch.tensor([pos-1], dtype=torch.int32)
     
-    # Run through FFN chunks with state
+    # Create causal mask for current position
+    causal_mask = make_causal_mask(context_length, 0)  # Always start from 0 for generation
+    single_causal_mask = torch.tensor(causal_mask[:, :, pos-1:pos, :], dtype=torch.float16)
+    
+    # Run through FFN chunks
     for ffn_model in ffn_models:
         if isinstance(ffn_model, dict):
             inputs = {
                 'hidden_states': hidden_states.numpy(),
                 'update_mask': update_mask.numpy(),
                 'position_ids': position_ids.numpy(),
-                'causal_mask': causal_mask.numpy(),
+                'causal_mask': single_causal_mask.numpy(),
                 'current_pos': position_ids.numpy()
             }
             output = ffn_model['infer'].predict(inputs, state)
             hidden_states = torch.from_numpy(output['output_hidden_states'])
     
-    # Run LM head
+    # Run LM head and get next token
     lm_output = lmhead_model.predict({'hidden_states': hidden_states.numpy()})
-    # Debug print
-    #print("\nLM Head output keys:", list(lm_output.keys()))
     
-    # Combine logits1-8 if they exist
     if 'logits1' in lm_output:
-        # Concatenate all logits parts
         logits_parts = []
         for i in range(1, 9):
             key = f'logits{i}'
             if key in lm_output:
                 logits_parts.append(torch.from_numpy(lm_output[key]))
-        logits = torch.cat(logits_parts, dim=-1)  # Concatenate along vocab dimension
+        logits = torch.cat(logits_parts, dim=-1)
     else:
-        # Try output_logits as fallback
         logits = torch.from_numpy(lm_output['output_logits'])
     
-    # Apply temperature and sample
     if temperature > 0:
         logits = logits / temperature
         probs = F.softmax(logits[0, -1, :], dim=-1)
@@ -487,7 +487,7 @@ def create_unified_state(ffn_models, context_length):
         print("\nCreated unified transformer state")
         return state
 
-def chat_loop(embed_model, ffn_models, lmhead_model, tokenizer, metadata):
+def chat_loop(embed_model, ffn_models, lmhead_model, tokenizer, metadata, auto_prompt=None):
     """Interactive chat loop."""
     context_length = metadata.get('context_length')
     batch_size = metadata.get('batch_size', 64)
@@ -499,25 +499,50 @@ def chat_loop(embed_model, ffn_models, lmhead_model, tokenizer, metadata):
     print("\nStarting chat session. Press Ctrl+D to exit.")
     print("Type your message and press Enter to chat.")
     
+    # Keep track of conversation history
+    conversation = []
+    
     try:
         while True:
             try:
                 print(f"\n{LIGHT_GREEN}You:{RESET_COLOR}", end=' ', flush=True)
-                user_input = input().strip()
+                if auto_prompt is not None:
+                    user_input = auto_prompt
+                    print(user_input)
+                else:
+                    user_input = input().strip()
+                    print(user_input)
             except EOFError:
                 print("\nExiting chat...")
                 break
-                
+            
             if not user_input:
                 continue
             
-            # Format using chat template like in old_chat.py
-            messages = [{"role": "user", "content": user_input}]
+            # Add user message to conversation
+            conversation.append({"role": "user", "content": user_input})
+            
+            # Format using chat template with full history
             base_input_ids = tokenizer.apply_chat_template(
-                messages,
+                conversation,
                 return_tensors="pt",
-                add_generation_prompt=False
+                add_generation_prompt=True
             ).to(torch.int32)
+            
+            # Check if we need to trim history
+            while base_input_ids.size(1) > context_length - 100:  # Leave room for response
+                # Remove oldest message pair (user + assistant)
+                if len(conversation) > 2:
+                    conversation = conversation[2:]  # Remove oldest pair
+                    base_input_ids = tokenizer.apply_chat_template(
+                        conversation,
+                        return_tensors="pt",
+                        add_generation_prompt=True
+                    ).to(torch.int32)
+                else:
+                    # If only current message remains and still too long, truncate
+                    base_input_ids = base_input_ids[:, -context_length//2:]
+                    break
             
             context_pos = base_input_ids.size(1)
             
@@ -528,17 +553,18 @@ def chat_loop(embed_model, ffn_models, lmhead_model, tokenizer, metadata):
                 value=0
             )
             
-            # Create causal mask for the entire context
-            causal_mask = make_causal_mask(context_length, 0)
-            causal_mask = torch.tensor(causal_mask, dtype=torch.float16)
-            
             print(f"\n{LIGHT_BLUE}Assistant:{RESET_COLOR}", end=' ', flush=True)
             
-            # Initialize token printer
+            # Initialize token printer and collect response
             token_printer = TokenPrinter(tokenizer)
+            response_tokens = []
             generation_start_time = time.time()
             
             try:
+                # Create initial causal mask
+                causal_mask = make_causal_mask(context_length, 0)
+                causal_mask = torch.tensor(causal_mask, dtype=torch.float16)
+                
                 # Run prefill on entire context
                 current_pos = run_prefill(
                     embed_model,
@@ -549,37 +575,50 @@ def chat_loop(embed_model, ffn_models, lmhead_model, tokenizer, metadata):
                     batch_size,
                     state
                 )
+                print(f"\n[DEBUG] After initial prefill - current_pos: {current_pos}")
                 
                 # Generation loop
                 pos = context_pos
                 response_tokens = []
+                tokens_after_shift = 0
+                window_shifted = False
                 
-                while True:  # Changed from context_size - 1 to True for continuous generation
+                while True:
                     # Check if we need to shift window
                     if pos >= context_length - 2:
-                        print("\nShifting context window...")
+                        #print(f"\n[DEBUG] Window shift triggered at pos: {pos}")
+                        #print(f"[DEBUG] Tokens at shift point: {tokenizer.decode(input_ids[0, pos-40:pos])}")
                         
-                        shift_size = context_length // 4  # Shift by 1/4 of context
-                        new_size = context_length - shift_size
+                        # Calculate shift to maintain full batches
+                        batch_size = metadata.get('batch_size', 64)
+                        desired_batches = 12  # Keep 12 full batches (768 tokens)
+                        new_size = desired_batches * batch_size
                         
-                        # Create shifted input_ids and preserve the most recent context
+                        # Create shifted input_ids
                         tmp = torch.zeros((1, context_length), dtype=torch.int32)
-                        tmp[:,0:new_size] = input_ids[:,shift_size:context_length]
+                        tmp[:,0:new_size] = input_ids[:,pos-new_size:pos]
                         input_ids = tmp
                         
-                        # Adjust position after shift
-                        pos = new_size
-                        
-                        # Run prefill on the shifted sequence
+                        # Reset state and run prefill
+                        # keep the same state
+                        #state = create_unified_state(ffn_models, context_length)
                         current_pos = run_prefill(
                             embed_model,
                             ffn_models,
                             input_ids,
-                            pos,
+                            new_size,  # Prefill the entire shifted content
                             context_length,
                             batch_size,
                             state
                         )
+                        
+                        # Start generating from the next position
+                        pos = new_size  # Don't back up, continue from where we left off
+                        
+                        #print(f"\n[DEBUG] After shift - next token will be at pos {pos}")
+                        #print(f"[DEBUG] Context before next token: {tokenizer.decode(input_ids[0, pos-40:pos])}")
+                        
+                        window_shifted = True
                     
                     # Generate next token
                     next_token = generate_next_token(
@@ -600,14 +639,27 @@ def chat_loop(embed_model, ffn_models, lmhead_model, tokenizer, metadata):
                     
                     pos += 1
                     
+                    # Comment out the 50 token limit
+                    # if window_shifted:
+                    #     tokens_after_shift += 1
+                    #     if tokens_after_shift >= 50:
+                    #         print("\n[DEBUG] Generated 50 tokens after window shift, exiting...")
+                    #         break
+                    
                     if next_token == tokenizer.eos_token_id:
                         break
                 
-                # Get final response and stats
+                # Add assistant response to conversation
                 response_text = token_printer.stop()
+                conversation.append({"role": "assistant", "content": response_text})
+                
+                # Print stats
                 generation_time = time.time() - generation_start_time
                 tokens_per_second = len(response_tokens) / generation_time
                 print(f"\n{DARK_BLUE}[{len(response_tokens)} tokens, {tokens_per_second:.1f} tokens/s]{RESET_COLOR}")
+                
+                if auto_prompt is not None:
+                    break
                 
             except KeyboardInterrupt:
                 print("\nGeneration interrupted")
@@ -622,7 +674,7 @@ def chat_loop(embed_model, ffn_models, lmhead_model, tokenizer, metadata):
 def main():
     parser = argparse.ArgumentParser(description='Chat with CoreML LLaMA with context window shifting (c) 2025 Anemll')
     
-    # Model paths
+    # Add existing arguments
     parser.add_argument('--d', '--dir', type=str, default='.',
                        help='Directory containing model files (default: current directory)')
     parser.add_argument('--embed', type=str, required=True,
@@ -633,6 +685,10 @@ def main():
                        help='Path to LM head model (relative to --dir)')
     parser.add_argument('--tokenizer', type=str, required=False,
                        help='Path to tokenizer')
+    
+    # Add new argument for auto-generation
+    parser.add_argument('--prompt', type=str,
+                       help='If specified, run once with this prompt and exit')
     
     # Model configuration
     parser.add_argument('--context-length', type=int,
@@ -692,7 +748,8 @@ def main():
             ffn_models=ffn_models,
             lmhead_model=lmhead_model,
             tokenizer=tokenizer,
-            metadata=metadata
+            metadata=metadata,
+            auto_prompt=args.prompt  # Pass the prompt
         )
         
     except Exception as e:
