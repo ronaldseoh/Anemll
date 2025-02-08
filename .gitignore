@@ -1,0 +1,9 @@
+bin/
+lib/
+share/
+LOG.txt
+log_bad.txt
+log_good.txt
+*.ml*
+tests/old_chat.py
+R1-min2.py
