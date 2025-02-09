@@ -575,7 +575,6 @@ def chat_loop(embed_model, ffn_models, lmhead_model, tokenizer, metadata, auto_p
                     batch_size,
                     state
                 )
-                print(f"\n[DEBUG] After initial prefill - current_pos: {current_pos}")
                 
                 # Generation loop
                 pos = context_pos

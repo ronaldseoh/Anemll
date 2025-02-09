@@ -10,3 +10,5 @@ R1-min2.py
 .DS_Store
 anemll-env/pyvenv.cfg
 .gitignore
+anemll/ane_converter/__pycache__/
+anemll/models/__pycache__/
