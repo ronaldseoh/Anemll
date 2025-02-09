@@ -24,6 +24,9 @@ DARK_BLUE = "\033[34m"
 LIGHT_GREEN = "\033[92m"
 RESET_COLOR = "\033[0m"
 
+# Add at the top with other constants
+WARMUP_TOKEN_LIMIT = 10  # Maximum tokens to generate during warmup
+
 class TokenPrinter:
     """Handles background printing of generated tokens."""
     def __init__(self, tokenizer):
@@ -487,17 +490,23 @@ def create_unified_state(ffn_models, context_length):
         print("\nCreated unified transformer state")
         return state
 
-def chat_loop(embed_model, ffn_models, lmhead_model, tokenizer, metadata, auto_prompt=None):
+def get_user_input():
+    sys.stdout.write(f"\n{LIGHT_GREEN}You:{RESET_COLOR} ")
+    sys.stdout.flush()
+    line = sys.stdin.readline()
+    if not line:
+        raise EOFError
+    return line.rstrip('\n')
+
+def chat_loop(embed_model, ffn_models, lmhead_model, tokenizer, metadata, state, auto_prompt=None, warmup=False):
     """Interactive chat loop."""
     context_length = metadata.get('context_length')
     batch_size = metadata.get('batch_size', 64)
     
-    # Create unified state
-    state = create_unified_state(ffn_models, context_length)
-    
-    print(f"\nUsing context length: {context_length}")
-    print("\nStarting chat session. Press Ctrl+D to exit.")
-    print("Type your message and press Enter to chat.")
+    if not warmup:
+        print(f"\nUsing context length: {context_length}")
+        print("\nStarting chat session. Press Ctrl+D to exit.")
+        print("Type your message and press Enter to chat.")
     
     # Keep track of conversation history
     conversation = []
@@ -505,15 +514,17 @@ def chat_loop(embed_model, ffn_models, lmhead_model, tokenizer, metadata, auto_p
     try:
         while True:
             try:
-                print(f"\n{LIGHT_GREEN}You:{RESET_COLOR}", end=' ', flush=True)
+                if not warmup:
+                    print(f"\n{LIGHT_GREEN}You:{RESET_COLOR}", end=' ', flush=True)
                 if auto_prompt is not None:
                     user_input = auto_prompt
-                    print(user_input)
+                    if not warmup:
+                        print(user_input)
                 else:
                     user_input = input().strip()
-                    print(user_input)
             except EOFError:
-                print("\nExiting chat...")
+                if not warmup:
+                    print("\nExiting chat...")
                 break
             
             if not user_input:
@@ -553,7 +564,8 @@ def chat_loop(embed_model, ffn_models, lmhead_model, tokenizer, metadata, auto_p
                 value=0
             )
             
-            print(f"\n{LIGHT_BLUE}Assistant:{RESET_COLOR}", end=' ', flush=True)
+            if not warmup:
+                print(f"\n{LIGHT_BLUE}Assistant:{RESET_COLOR}", end=' ', flush=True)
             
             # Initialize token printer and collect response
             token_printer = TokenPrinter(tokenizer)
@@ -575,12 +587,11 @@ def chat_loop(embed_model, ffn_models, lmhead_model, tokenizer, metadata, auto_p
                     batch_size,
                     state
                 )
+                #print(f"\n[DEBUG] After initial prefill - current_pos: {current_pos}")
                 
                 # Generation loop
                 pos = context_pos
-                response_tokens = []
-                tokens_after_shift = 0
-                window_shifted = False
+                tokens_generated = 0
                 
                 while True:
                     # Check if we need to shift window
@@ -632,18 +643,17 @@ def chat_loop(embed_model, ffn_models, lmhead_model, tokenizer, metadata, auto_p
                     
                     # Add token
                     input_ids[0, pos] = next_token
-                    token_printer.add_token(next_token)
-                    token_printer.drain_buffer()
+                    if not warmup:
+                        token_printer.add_token(next_token)
+                        token_printer.drain_buffer()
                     response_tokens.append(next_token)
                     
                     pos += 1
+                    tokens_generated += 1
                     
-                    # Comment out the 50 token limit
-                    # if window_shifted:
-                    #     tokens_after_shift += 1
-                    #     if tokens_after_shift >= 50:
-                    #         print("\n[DEBUG] Generated 50 tokens after window shift, exiting...")
-                    #         break
+                    # In warmup mode, limit tokens
+                    if warmup and tokens_generated >= WARMUP_TOKEN_LIMIT:
+                        break
                     
                     if next_token == tokenizer.eos_token_id:
                         break
@@ -652,23 +662,26 @@ def chat_loop(embed_model, ffn_models, lmhead_model, tokenizer, metadata, auto_p
                 response_text = token_printer.stop()
                 conversation.append({"role": "assistant", "content": response_text})
                 
-                # Print stats
-                generation_time = time.time() - generation_start_time
-                tokens_per_second = len(response_tokens) / generation_time
-                print(f"\n{DARK_BLUE}[{len(response_tokens)} tokens, {tokens_per_second:.1f} tokens/s]{RESET_COLOR}")
+                # Print stats only if not in warmup
+                if not warmup:
+                    generation_time = time.time() - generation_start_time
+                    tokens_per_second = len(response_tokens) / generation_time
+                    print(f"\n{DARK_BLUE}[{len(response_tokens)} tokens, {tokens_per_second:.1f} tokens/s]{RESET_COLOR}")
                 
                 if auto_prompt is not None:
                     break
                 
             except KeyboardInterrupt:
-                print("\nGeneration interrupted")
+                if not warmup:
+                    print("\nGeneration interrupted")
                 token_printer.stop()
                 continue
                 
     except Exception as e:
-        print(f"\nError in chat loop: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        if not warmup:
+            print(f"\nError in chat loop: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
 def main():
     parser = argparse.ArgumentParser(description='Chat with CoreML LLaMA with context window shifting (c) 2025 Anemll')
@@ -740,15 +753,32 @@ def main():
         if tokenizer is None:
             raise RuntimeError("Failed to initialize tokenizer")
         
-        # Start chat loop with updated context length
-        print("\nStarting chat session...")
+        # Create unified state once
+        state = create_unified_state(ffn_models, metadata['context_length'])
+        
+        # Warmup runs to prevent Python GIL issues with CoreML !
+        for i in range(2):
+            chat_loop(
+                embed_model=embed_model,
+                ffn_models=ffn_models,
+                lmhead_model=lmhead_model,
+                tokenizer=tokenizer,
+                metadata=metadata,
+                state=state,  # Pass the state
+                warmup=True,
+                auto_prompt="who are you?"
+            )
+        
+        # Main run
         chat_loop(
             embed_model=embed_model,
             ffn_models=ffn_models,
             lmhead_model=lmhead_model,
             tokenizer=tokenizer,
             metadata=metadata,
-            auto_prompt=args.prompt  # Pass the prompt
+            state=state,  # Pass the state
+            warmup=False,
+            auto_prompt=args.prompt
         )
         
     except Exception as e:
