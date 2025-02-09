@@ -6,6 +6,8 @@
 #use LLamaModel for DeepSeek on LLaMA 3.1 architecture
 
 '''
+#NOT IMPLEMENTED YET, USE LLAMA MODEL FOR DISTILLED MODELS
+
 from .base_model import BaseModel
 
 class DeepSeekModel(BaseModel):

@@ -6,7 +6,8 @@
 > - macOS supports up to ~2GB
 > - Models are split during conversion to avoid these limits
 > - Requires macOS 15 or later
-
+> - This model is quantized to 6-bit LUT, its a bit slower vs 4-bit LUT, but provides better quality.
+> - For the fastest performance, use 4-bit LUT and 512 context length!
 
 # This guide is for LLAMA 3.2 1B Conversion and testing with chat.py app
 

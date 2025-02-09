@@ -6,6 +6,7 @@
 > - Each chunk must be under 1GB for iOS compatibility
 > - Conversion process may take several an hor or more and require 32GB of strage. 64GB RAM is recommended for conversion.
 > - Requires macOS 15 or later
+> - This model is quantized to 6-bit LUT, its a bit slower vs 4-bit LUT, but provides better quality.
 
 ## Model Conversion Steps
 
@@ -104,10 +105,10 @@ python ./tests/chat.py \
 > - Context length (1024) will be detected from directory name (ctx1024)
 > - Tokenizer will use the model directory by default
 
-#### Option 2: Run from local folder with external tokenizer
+#### Option 2: Run from external folder 
 ```bash
 cd /path/to/models/anemll-DeepSeek-8B-ctx1024-v2/
-python /path/to/anemll/tests/chat.py \
+python ./tests/chat.py \
     --embed DeepSeek_embeddings \
     --lmhead DeepSeek_lm_head_lut6 \
     --ffn DeepSeek_FFN_PF_lut6_chunk_01of08 \
@@ -120,20 +121,6 @@ python /path/to/anemll/tests/chat.py \
 > - Specify external tokenizer path explicitly
 > - Context length will be detected from current directory name
 
-#### Option 3: Specify full paths and parameters
-```bash
-python ./tests/chat.py \
-    --embed /full/path/to/DeepSeek_embeddings \
-    --lmhead /full/path/to/DeepSeek_lm_head_lut6 \
-    --ffn /full/path/to/DeepSeek_FFN_PF_lut6_chunk_01of08 \
-    --tokenizer /path/to/DeepSeekR1-8B/ \
-    --context-length 1024
-```
-
-> [!Note]
-> - All paths must be specified fully
-> - Context length must be specified explicitly
-> - Tokenizer path must point to original model directory or local tokenizer files
 
 #### Context Length
 - If directory name contains `ctxNNNN` (e.g. ctx1024), that value is used
