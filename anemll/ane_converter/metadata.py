@@ -47,7 +47,7 @@ def get_anemll_version():
         except Exception as e:
             print(f"DEBUG: Version lookup error: {str(e)}")
             
-    return "0.1.0"  # Return default version if all else fails
+    return "0.1.1"  # Return default version if all else fails
 
 def AddMetadata(model, params=None):
     """Add unified metadata to CoreML models.

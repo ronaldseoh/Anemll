@@ -126,37 +126,47 @@ def compile_part(part: str, lut_bits: Optional[int] = None, target_dir: str = ".
         
     return compile_model(model_path, target_dir)
 
-def main():
-    parser = argparse.ArgumentParser(description='Compile CoreML models to MLModelC format')
-    parser.add_argument('part', type=str, help='Model part to compile (1=embeddings, 2=FFN, 3=lm_head)')
-    parser.add_argument('--lut', type=int, help='LUT bits used in conversion (for part 2 and 3)')
+def parse_args():
+    parser = argparse.ArgumentParser(description='Compile models to MLModelC format')
+    parser.add_argument('part', type=str, help='Model part to compile (1, 2, or 3)')
+    parser.add_argument('--lut', type=int, help='LUT bits used in quantization (optional)')
     parser.add_argument('--chunk', type=int, help='Number of chunks (for part 2)')
-    parser.add_argument('--prefix', type=str, default='llama', help='Prefix for model filenames')
+    parser.add_argument('--prefix', type=str, default='llama', help='Model name prefix')
+    parser.add_argument('--input', type=str, default='.', help='Input directory containing models')
+    parser.add_argument('--output', type=str, default=None, help='Output directory (default: same as input)')
+    return parser.parse_args()
+
+def main():
+    args = parse_args()
     
-    args = parser.parse_args()
+    # Set output dir to input dir if not specified
+    output_dir = args.output if args.output else args.input
     
     # Construct input filename based on part and parameters
     if args.part == '1':
         input_name = f'{args.prefix}_embeddings.mlpackage'
     elif args.part == '3':
-        if args.lut is None:
-            print("Error: --lut required for part 3")
-            return 1
-        input_name = f'{args.prefix}_lm_head_lut{args.lut}.mlpackage'
+        # Make LUT optional for part 3
+        lut_suffix = f'_lut{args.lut}' if args.lut else ''
+        input_name = f'{args.prefix}_lm_head{lut_suffix}.mlpackage'
     elif args.part == '2':
-        if args.lut is None or args.chunk is None:
-            print("Error: --lut and --chunk required for part 2")
+        if args.chunk is None:
+            print("Error: --chunk required for part 2")
             return 1
+        # Make LUT optional for part 2
+        lut_suffix = f'_lut{args.lut}' if args.lut else ''
         # For part 2, compile all chunks
         for i in range(args.chunk):
-            chunk_name = f'{args.prefix}_FFN_PF_lut{args.lut}_chunk_{i+1:02d}of{args.chunk:02d}.mlpackage'
-            compile_model(chunk_name)
+            chunk_name = f'{args.prefix}_FFN_PF{lut_suffix}_chunk_{i+1:02d}of{args.chunk:02d}.mlpackage'
+            input_path = os.path.join(args.input, chunk_name)
+            compile_model(input_path, output_dir)
         return 0
     else:
         print(f"Error: Invalid part {args.part}")
         return 1
     
-    compile_model(input_name)
+    input_path = os.path.join(args.input, input_name)
+    compile_model(input_path, output_dir)
     return 0
 
 if __name__ == "__main__":

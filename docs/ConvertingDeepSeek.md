@@ -114,6 +114,8 @@ python ./tests/chat.py \
     --ffn DeepSeek_FFN_PF_lut6_chunk_01of08 \
     --tokenizer /path/to/original/DeepSeekR1-8B/
 ```
+> Note: If you used [convert_model.sh](convert_model.md) to convert the model, you can also run full chat using the generated meta.yaml:
+```
 
 > [!Note]
 > - Change to the directory containing model files

@@ -13,13 +13,21 @@ We aim to:
 
 
 > [!Important]
-> This is Alpha Release 0.1.0 for the library. It is designed to process Model Weights directly from Hugging Face models and convert them to the CoreML format for Apple Neural Engine (ANE for short).
+> This is Alpha Release 0.1.1 for the library. It is designed to process Model Weights directly from Hugging Face models and convert them to the CoreML format for Apple Neural Engine (ANE for short).
 > - This release only supports LLAMA models including DeepSeek distilled models on LLaMA 3.1 architecture
 > - The future release will add support for more models and architectures
 
+
+### New in 0.1.1 🚀
+- Single-shot model conversion with [Convert Model Script](./docs/convert_model.md)
+- Simplified model configuration with [meta.yaml](./docs/chat.md)
+- Automated Hugging Face distribution preparation with [prepare_hf.sh](./docs/prepare_hf.md)
+- Enhanced Chat Interfaces with better error handling and configuration support - see [chat.md](./docs/chat.md)
+- Improved LLaMA model with prefill optimization 
+
 ## Basic Workflow
 
-See [Model Conversion Guide](./docs/convert.md) and [DeepSeek Model Conversion Guide](./docs/ConvertingDeepSeek.md) for more details.
+See [Model Conversion Guide](./docs/convert.md) and [DeepSeek Model Conversion Guide](./docs/ConvertingDeepSeek.md) and Single-shot model conversion with [Convert Model Script](./docs/convert_model.md) for more details.
 
 1. Download the model from Hugging Face
 2. Convert the model to the CoreML format using ANEMLL
@@ -35,27 +43,31 @@ There are 3 parts for LLM:
 2. Feed Forward Network/layers 
 3. LM Head
 
-> LLaMA Model ANE optimized implementation is in `./anemall/models/llama_model.py`
+> LLaMA Model ANE optimized implementation is in `./anemll/models/llama_model.py`
 
 For FFN, we can split it into multiple chunks to allow for big models (like 8GB LLaMA/DeepSeek)
 
-### Conversion Steps
+### Conversion Steps explained
 
 1. **ANE_converter**:
-   - `./anemall/ANE_converter.py` creates MLPackages for each part
+   - `./anemll/ane_converter/llama_converter.py` creates MLPackages for each part
    - We also create "Prefill" models for KV cache
    - This implementation uses Stateful API for ANE, introduced in iOS 18 / macOS 15
 
 2. **Combine Models**:
    - After creating MLPackages, we merge FFN and prefill chunks into Multi-Function Chunks
    - This reduces weight size by 50% as KV pre-fill and FFN use the same weights
-   - Processed by `./anemall/combine_models.py`
+   - Processed by `./anemll/utils/combine_models.py`
 
 3. **Compile Models**:
    - Convert to MLModelC format for on-device inference
-   - Done via `./anemall/utils/compile_models.py`
+   - Done via `./anemll/utils/compile_models.py`
 
-See [Model Conversion Documentation](./docs/model_conversion.md) for more details.
+Additional Documentation:
+- See Single-shot model conversion with [convert_model.sh](./docs/convert_model.md)
+- See Automated Hugging Face Model Distribution preparation with [prepare_hf.sh](./docs/prepare_hf.md)
+- See [Model Conversion Documentation](./docs/convert.md) for more details
+
 
 ## Testing
 
@@ -70,14 +82,21 @@ Features of chat_full.py:
 - Shows generation speed and token statistics
 - Better handles multi-turn conversations
 
-Example running chat_full.py:
+Example running Chats:
+
 ```bash
-python tests/chat_full.py \
-  --embed ./llama_embeddings \
-  --lmhead llama_lm_head_lut6 \
-  --ffn llama_FFN_PF_lut6_chunk_01of02 \
-  --tokenizer ../Meta-Llama-3.1-8B
+# Basic chat
+python ./tests/chat.py --meta ./converted_models/meta.yaml
+
+# Full conversation mode
+python ./tests/chat_full.py --meta ./converted_models/meta.yaml
 ```
+See [chat.md](./docs/chat.md) for more details 
+
+> [Note]
+>The first time the model loads, macOS will take some time to place it on the device. Subsequent loads will be instantaneous. Use Ctrl-D to exit, Ctrl-C to interrupt inference.
+
+
 
 ## Installation
 
@@ -128,6 +147,7 @@ Feel free to submit issues and pull requests to improve **ANEMLL**!
 ## License
 
 ANEMLL is licensed under the MIT License.
+https://opensource.org/license/mit 
 
 ## Links & Resources
 

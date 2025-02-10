@@ -782,25 +782,31 @@ class LlamaConverter(BaseConverter):
         except Exception as e:
             print(f"Error during prefill conversion: {str(e)}")
             raise
-"""Test conversion of a LLAMA model to ANE format.
 
-Args:
-    model_path: Path to model directory with config.json and weights
-    output_path: Path to save converted model (optional)
-    context_length: Context length for the model
-    lut_bits: Number of bits for LUT quantization
-    model: Pre-initialized model (optional)
-    skip_load_weights: If True, skip loading weights
-    split_part: Which part to convert ('1' for embeddings, '2' for transformer, 
-                '3' for LM head, '123' for full model)
-    batch_size: Batch size for the model
-    num_chunks: Number of chunks to split transformer into
-    prefix: Prefix for output models filenames
-"""
+def parse_args():
+    parser = argparse.ArgumentParser(description='Convert LLaMA model to CoreML format')
+    
+    # Model configuration
+    parser.add_argument('--model', type=str, help='Path to model directory (default: ../Meta-Llama-3.2-1B)')
+    parser.add_argument('--prefix', type=str, default='llama', help='Prefix for output filenames')
+    
+    # Conversion options
+    parser.add_argument('--batch-size', type=int, default=64, help='Batch size for prefill')
+    parser.add_argument('--context-length', type=int, default=512, help='Maximum context length')
+    parser.add_argument('--lut', type=int, default=None, help='Use LUT quantization with N bits')
+    parser.add_argument('--chunk', type=int, default=None, help='Split into N chunks')
+    parser.add_argument('--part', type=str, 
+                       choices=['1', '2', '2_prefill', '3', 'all'], 
+                       default='all',
+                       help='Convert specific part (1=embeddings, 2=FFN, 2_prefill=FFN prefill mode, 3=lm_head)')
+    parser.add_argument('--output', type=str, default='.',
+                      help='Output directory for converted models (default: current directory)')
+    
+    return parser.parse_args()
 
 def test_conversion(model_path=None, output_path=None, context_length=512, lut_bits=4, 
                    model=None, skip_load_weights=False, split_part='123', 
-                   batch_size=64, num_chunks=1, prefix='llama'):
+                   batch_size=64, num_chunks=1, prefix='llama', output_dir='.'):
     """Test conversion of a LLAMA model to ANE format."""
     if model is None:
         print(f"Testing conversion with model from {model_path}")
@@ -834,10 +840,12 @@ def test_conversion(model_path=None, output_path=None, context_length=512, lut_b
         num_chunks=num_chunks
     )
     
-    # Handle chunked conversion for transformer modes
-    if split_part in ['2', '2_prefill'] and num_chunks > 1:
+    # Handle FFN and prefill conversions (both chunked and non-chunked)
+    if split_part in ['2', '2_prefill']:
         converted_models = []
-        for i in range(num_chunks):
+        chunks_to_process = range(num_chunks)
+        
+        for i in chunks_to_process:
             # Use FFN in filename for mode '2', keep simple prefill for '2_prefill'
             base_name = f'{prefix}_FFN' if split_part == '2' else f'{prefix}_prefill'
             if lut_bits is not None:
@@ -848,7 +856,10 @@ def test_conversion(model_path=None, output_path=None, context_length=512, lut_b
             
             # Clean up before converting next chunk
             import gc
-            gc.collect()  # Force garbage collection
+            gc.collect()
+            
+            # For single chunk (num_chunks=1), don't pass chunk_idx
+            chunk_idx = i if num_chunks > 1 else None
             
             if split_part == '2':
                 chunk_model = converter.convert_FFN(model, chunk_idx=i)
@@ -866,6 +877,7 @@ def test_conversion(model_path=None, output_path=None, context_length=512, lut_b
                     'split_part': split_part
                 })
                 print(f"Saving chunk to {chunk_output_path}")
+                chunk_output_path = os.path.join(output_dir, chunk_output_path)
                 chunk_model.save(chunk_output_path)
                 
             converted_models.append(chunk_model)
@@ -915,6 +927,7 @@ def test_conversion(model_path=None, output_path=None, context_length=512, lut_b
                     })
                     chunk_output_path = output_path.replace('.mlpackage', f'_{i+1}.mlpackage')
                     print(f"Saving chunk to {chunk_output_path}")
+                    chunk_output_path = os.path.join(output_dir, chunk_output_path)
                     chunk_model.save(chunk_output_path)
             else:
                 # Handle single model parts
@@ -925,6 +938,7 @@ def test_conversion(model_path=None, output_path=None, context_length=512, lut_b
                     'split_part': split_part
                 })
                 print(f"Saving model to {output_path}")
+                output_path = os.path.join(output_dir, output_path)
                 converted_model.save(output_path)
         
         print("\nModel verification:")
@@ -941,23 +955,7 @@ def test_conversion(model_path=None, output_path=None, context_length=512, lut_b
         return converted_model
 
 def main():
-    parser = argparse.ArgumentParser(description='Convert LLaMA model to CoreML format')
-    
-    # Model configuration
-    parser.add_argument('--model', type=str, help='Path to model directory (default: ../Meta-Llama-3.2-1B)')
-    parser.add_argument('--prefix', type=str, default='llama', help='Prefix for output filenames')
-    
-    # Conversion options
-    parser.add_argument('--batch-size', type=int, default=64, help='Batch size for prefill')
-    parser.add_argument('--context-length', type=int, default=512, help='Maximum context length')
-    parser.add_argument('--lut', type=int, default=None, help='Use LUT quantization with N bits')
-    parser.add_argument('--chunk', type=int, default=None, help='Split into N chunks')
-    parser.add_argument('--part', type=str, 
-                       choices=['1', '2', '2_prefill', '3', 'all'], 
-                       default='all',
-                       help='Convert specific part (1=embeddings, 2=FFN, 2_prefill=FFN prefill mode, 3=lm_head)')
-    
-    args = parser.parse_args()
+    args = parse_args()
     
     # Set model path
     model_path = args.model if args.model else "../Meta-Llama-3.2-1B"
@@ -997,36 +995,20 @@ def main():
         print("\nLoading pretrained weights...")
         model.load_pretrained_weights(model_path)
         
-        # Create converter instance
-        converter = LlamaConverter(
+        # Create output directory if needed
+        os.makedirs(args.output, exist_ok=True)
+        
+        # Pass output directory to test_conversion
+        test_conversion(
             model=model,
+            split_part=args.part,
+            prefix=args.prefix,
             context_length=args.context_length,
             lut_bits=args.lut,
             batch_size=args.batch_size,
-            num_chunks=args.chunk
+            num_chunks=args.chunk,
+            output_dir=args.output
         )
-        
-        # Convert specified parts with prefix
-        if args.part == 'all':
-            test_conversion(
-                model=model,
-                split_part='123',
-                prefix=args.prefix,
-                context_length=args.context_length,
-                lut_bits=args.lut,
-                batch_size=args.batch_size,
-                num_chunks=args.chunk
-            )
-        else:
-            test_conversion(
-                model=model,
-                split_part=args.part,
-                prefix=args.prefix,
-                context_length=args.context_length,
-                lut_bits=args.lut,
-                batch_size=args.batch_size,
-                num_chunks=args.chunk
-            )
             
     except Exception as e:
         print(f"\nError during conversion: {str(e)}")

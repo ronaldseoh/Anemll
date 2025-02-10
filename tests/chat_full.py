@@ -17,6 +17,8 @@ import numpy as np
 import queue
 import threading
 import time
+import yaml
+import sys
 
 # ANSI color codes
 LIGHT_BLUE = "\033[94m"
@@ -38,9 +40,12 @@ class TokenPrinter:
         self.lock = threading.Lock()
         self.thinking = True  # Track if we're still in thinking mode
         self.decoding_buffer = []  # Buffer for token IDs
-        # Add token counting and timing
+        # Timing and stats tracking
         self.start_time = time.time()
         self.token_count = 0
+        self.prefill_time = 0
+        self.inference_time = 0
+        self.context_pos = 0
         self.start()
 
     def start(self):
@@ -101,13 +106,14 @@ class TokenPrinter:
                 self.thread.join(timeout=1.0)
             except Exception:
                 pass
-            # Calculate and print tokens/s
-            elapsed = time.time() - self.start_time
-            if elapsed > 0 and self.token_count > 0:
-                tokens_per_sec = self.token_count / elapsed
-                print(f"\n\nGenerated {self.token_count} tokens in {elapsed:.2f}s ({tokens_per_sec:.1f} tokens/s)")
             print(RESET_COLOR)  # Reset color at the end
         return self.buffer
+
+    def set_timing(self, prefill_time, inference_time, context_pos):
+        """Set timing information."""
+        self.prefill_time = prefill_time
+        self.inference_time = inference_time
+        self.context_pos = context_pos
 
 def parse_model_path(path):
     """Parse model path and return full path with .mlmodelc or .mlpackage extension."""
@@ -592,17 +598,17 @@ def chat_loop(embed_model, ffn_models, lmhead_model, tokenizer, metadata, state,
                 # Generation loop
                 pos = context_pos
                 tokens_generated = 0
+                inference_start = time.time()  # Start inference timing
                 
                 while True:
                     # Check if we need to shift window
                     if pos >= context_length - 2:
-                        #print(f"\n[DEBUG] Window shift triggered at pos: {pos}")
-                        #print(f"[DEBUG] Tokens at shift point: {tokenizer.decode(input_ids[0, pos-40:pos])}")
-                        
                         # Calculate shift to maintain full batches
                         batch_size = metadata.get('batch_size', 64)
-                        desired_batches = 12  # Keep 12 full batches (768 tokens)
-                        new_size = desired_batches * batch_size
+                        # Calculate max batches that fit in context
+                        max_batches = context_length // batch_size
+                        desired_batches = max(1, max_batches - 2)  # Leave room for new tokens
+                        new_size = min(desired_batches * batch_size, context_length - batch_size)
                         
                         # Create shifted input_ids
                         tmp = torch.zeros((1, context_length), dtype=torch.int32)
@@ -658,15 +664,22 @@ def chat_loop(embed_model, ffn_models, lmhead_model, tokenizer, metadata, state,
                     if next_token == tokenizer.eos_token_id:
                         break
                 
+                inference_time = time.time() - inference_start  # Calculate inference time
+                
                 # Add assistant response to conversation
                 response_text = token_printer.stop()
                 conversation.append({"role": "assistant", "content": response_text})
                 
                 # Print stats only if not in warmup
                 if not warmup:
-                    generation_time = time.time() - generation_start_time
-                    tokens_per_second = len(response_tokens) / generation_time
-                    print(f"\n{DARK_BLUE}[{len(response_tokens)} tokens, {tokens_per_second:.1f} tokens/s]{RESET_COLOR}")
+                    total_time = time.time() - generation_start_time
+                    prefill_time = total_time - inference_time
+                    inference_tokens_per_sec = len(response_tokens) / inference_time if inference_time > 0 else 0
+                    prefill_ms = prefill_time * 1000
+                    prefill_tokens_per_sec = context_pos / prefill_time if prefill_time > 0 else 0
+                    print(f"{DARK_BLUE}{inference_tokens_per_sec:.1f} t/s, "
+                          f"TTFT: {prefill_ms:.1f}ms ({prefill_tokens_per_sec:.1f} t/s), "
+                          f"{len(response_tokens)} tokens{RESET_COLOR}")
                 
                 if auto_prompt is not None:
                     break
@@ -684,16 +697,19 @@ def chat_loop(embed_model, ffn_models, lmhead_model, tokenizer, metadata, state,
             traceback.print_exc()
 
 def main():
-    parser = argparse.ArgumentParser(description='Chat with CoreML LLaMA with context window shifting (c) 2025 Anemll')
+    parser = argparse.ArgumentParser(description='Full Chat with CoreML LLaMA with context window shifting (c) 2025 Anemll')
+    
+    # Add meta.yaml option
+    parser.add_argument('--meta', type=str, help='Path to meta.yaml to load all parameters')
     
     # Add existing arguments
     parser.add_argument('--d', '--dir', type=str, default='.',
                        help='Directory containing model files (default: current directory)')
-    parser.add_argument('--embed', type=str, required=True,
+    parser.add_argument('--embed', type=str, required=False,
                        help='Path to embeddings model (relative to --dir)')
-    parser.add_argument('--ffn', type=str, required=True,
+    parser.add_argument('--ffn', type=str, required=False,
                        help='Path to FFN model (can be chunked, relative to --dir)')
-    parser.add_argument('--lmhead', type=str, required=True,
+    parser.add_argument('--lmhead', type=str, required=False,
                        help='Path to LM head model (relative to --dir)')
     parser.add_argument('--tokenizer', type=str, required=False,
                        help='Path to tokenizer')
@@ -707,6 +723,51 @@ def main():
                        help='Context length for the model (default: 512), if not provided, it will be detected from the model directory name ctxNUMBER')
     
     args = parser.parse_args()
+    
+    # If meta.yaml is provided, load parameters from it
+    if args.meta:
+        try:
+            with open(args.meta, 'r') as f:
+                meta = yaml.safe_load(f)
+            params = meta['model_info']['parameters']
+            
+            # Set model directory to meta.yaml directory if not specified
+            if not args.d or args.d == '.':
+                args.d = str(Path(args.meta).parent)
+            
+            # Build model paths based on parameters
+            prefix = params.get('model_prefix', 'llama')  # Default to 'llama' if not specified
+            lut_ffn = f"_lut{params['lut_ffn']}" if params['lut_ffn'] != 'none' else ''
+            lut_lmhead = f"_lut{params['lut_lmhead']}" if params['lut_lmhead'] != 'none' else ''
+            num_chunks = int(params['num_chunks'])
+            
+            # Set model paths if not specified
+            if not args.embed:
+                args.embed = f'{prefix}_embeddings'
+            if not args.lmhead:
+                args.lmhead = f'{prefix}_lm_head{lut_lmhead}'
+            if not args.ffn:
+                args.ffn = f'{prefix}_FFN_PF{lut_ffn}_chunk_01of{num_chunks:02d}'
+            if not args.tokenizer:
+                args.tokenizer = args.d
+            
+            # Set other parameters
+            args.context_length = int(params['context_length'])
+            args.batch_size = int(params['batch_size'])
+            args.num_chunks = num_chunks
+            
+            print(f"\nLoaded parameters from {args.meta}:")
+            print(f"  Context Length: {args.context_length}")
+            print(f"  Batch Size: {args.batch_size}")
+            print(f"  Num Chunks: {args.num_chunks}")
+            print(f"  Models Directory: {args.d}")
+            print(f"  Embeddings: {args.embed}")
+            print(f"  LM Head: {args.lmhead}")
+            print(f"  FFN: {args.ffn}")
+            
+        except Exception as e:
+            print(f"\nError loading meta.yaml: {str(e)}")
+            sys.exit(1)
     
     # Convert directory to absolute path
     model_dir = Path(args.d).resolve()

@@ -9,6 +9,27 @@
 > - This model is quantized to 6-bit LUT, its a bit slower vs 4-bit LUT, but provides better quality.
 > - For the fastest performance, use 4-bit LUT and 512 context length!
 
+# Quick Conversion Using Script
+
+For convenience, you can use the provided conversion script to perform all steps in one go. For detailed information about batch conversion, see [Convert Model Script](convert_model.md).
+
+```bash
+./anemll/utils/convert_model.sh --model <path_to_model> --output <output_directory> [options]
+```
+
+Basic usage example:
+```bash
+./anemll/utils/convert_model.sh \
+    --model ../Meta-Llama-3.2-1B \
+    --output ./converted_models
+```
+
+> See [Convert Model Guide](convert_model.md) for detailed parameters and examples.
+
+# Manual Conversion Steps
+
+If you need more control over the conversion process, you can follow these detailed steps:
+
 # This guide is for LLAMA 3.2 1B Conversion and testing with chat.py app
 
 1. Download the model from Hugging Face:
@@ -92,16 +113,21 @@ python -m anemll.ane_converter.llama_converter \
 
 
 ### 5. Combine Models
-After we have Mlpackages, we merge FFN and prefill chunks into Multi-Function Chunks
+After we have MLpackages, we merge FFN and prefill chunks into Multi-Function Chunks.
 This allows us to reduce weight size by 50% because KV pre-fill and FFN are using the same weights.
-./anemall/combine_models.py is the file that processes this.
 
-combine FFN and prefill chunks into Multi-Function Chunks
-it creates *llama_FFN_PF_lut6_chunk_01of02.mlpackage* and *llama_FFN_PF_lut6_chunk_02of02.mlpackage* 
 ```bash
+# Basic usage (in models directory)
 python ./anemll/utils/combine_models.py \
     --lut 6 \
     --chunk 2
+
+# With explicit input/output directories
+python ./anemll/utils/combine_models.py \
+    --lut 6 \
+    --chunk 2 \
+    --input ./models \
+    --output ./combined_models
 ```
 
 ### 6. Compile Models
@@ -116,31 +142,25 @@ python ./anemll/utils/compile_models.py 2 --lut 6 --chunk 2
 > There are two options for testing:
 
 #### Standard Chat (chat.py)
-```bash
-python ./tests/chat.py \
-    --embed llama_embeddings \
-    --lmhead llama_lm_head_lut6 \
-    --ffn llama_FFN_PF_lut6_chunk_01of02 \
-    --tokenizer ../Meta-Llama-3.2-1B \
-    --context-length 1024
+
+ Option 1 - Using meta.yaml (recommended):
+ ```bash
+ python ./tests/chat.py \
+     --meta ./converted_models/meta.yaml
+ ```
+ 
+ Option 2 - Manual configuration:
+ ```bash
+ python ./tests/chat.py \
+     --embed llama_embeddings \
+     --lmhead llama_lm_head_lut6 \
+     --ffn llama_FFN_PF_lut6_chunk_01of02 \
+     --tokenizer ../Meta-Llama-3.2-1B \
+     --context-length 1024
+ ```
+
+> Note: If you used [convert_model.sh](convert_model.md) to convert the model, you can also run chat using the generated meta.yaml:
 ```
-
-#### Full Conversation Chat (chat_full.py)
-```bash
-python ./tests/chat_full.py \
-    --embed llama_embeddings \
-    --lmhead llama_lm_head_lut6 \
-    --ffn llama_FFN_PF_lut6_chunk_01of02 \
-    --tokenizer ../Meta-Llama-3.2-1B \
-    --context-length 1024
-```
-
-> [!Note]
-> - chat_full.py maintains full conversation history within context window
-> - Automatically truncates older messages when approaching context limit
-> - Supports dynamic context window shifting during generation
-> - Shows detailed generation statistics
-
 ## Output Files
 
 After conversion and compilation, you should have:
@@ -182,3 +202,4 @@ For more details about the implementation, see:
 - [Combine Models Documentation](combine_models.md) - Details about model combining
 
     
+

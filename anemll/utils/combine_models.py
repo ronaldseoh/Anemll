@@ -7,6 +7,8 @@ import coremltools as ct
 import os
 import sys
 import pkg_resources
+import argparse
+from pathlib import Path
 
 # Add package root to path when running as script
 if __name__ == '__main__':
@@ -88,30 +90,42 @@ def combine_models_custom(models_dict):
 
 
 def validate_chunk_files(num_chunks, lut_bits=None, mode=None, prefix='llama'):
-    """Validate that all required files exist before starting combination.
+    """Validate that all required chunk files exist."""
+    print("\nDebug: Validating chunk files:")
+    print(f"  Current dir: {os.getcwd()}")
+    print(f"  Num chunks: {num_chunks}")
+    print(f"  LUT bits: {lut_bits}")
+    print(f"  Prefix: {prefix}")
     
-    Args:
-        num_chunks: Number of chunks to validate
-        lut_bits: LUT quantization bits (optional)
-        mode: Either 'FFN', 'prefill', or None for both
-        prefix: Model name prefix (default: 'llama')
-        
-    Returns:
-        bool: True if all required files exist, False otherwise
-    """
-    lut_suffix = f'_lut{lut_bits}' if lut_bits is not None else ''
     missing_files = []
     
-    for chunk_idx in range(num_chunks):
-        if mode in [None, 'FFN']:
-            ffn_path = f'{prefix}_FFN{lut_suffix}_chunk_{chunk_idx+1:02d}of{num_chunks:02d}.mlpackage'
-            if not os.path.exists(ffn_path):
-                missing_files.append(ffn_path)
-                
-        if mode in [None, 'prefill']:
-            prefill_path = f'{prefix}_prefill{lut_suffix}_chunk_{chunk_idx+1:02d}of{num_chunks:02d}.mlpackage'
-            if not os.path.exists(prefill_path):
-                missing_files.append(prefill_path)
+    # Get file patterns - use "prefill" instead of "PF" to match actual files
+    if lut_bits:
+        ffn_template = f"{prefix}_FFN_lut{lut_bits}_chunk_{{:02d}}of{num_chunks:02d}.mlpackage"
+        pf_template = f"{prefix}_prefill_lut{lut_bits}_chunk_{{:02d}}of{num_chunks:02d}.mlpackage"
+    else:
+        ffn_template = f"{prefix}_FFN_chunk_{{:02d}}of{num_chunks:02d}.mlpackage"
+        pf_template = f"{prefix}_prefill_chunk_{{:02d}}of{num_chunks:02d}.mlpackage"
+    
+    print("\nLooking for files with patterns:")
+    print(f"  FFN: {ffn_template.format(1).replace('01', '{:02d}')}")
+    print(f"  PF:  {pf_template.format(1).replace('01', '{:02d}')}")
+    
+    print("\nFiles in directory:")
+    for f in os.listdir('.'):
+        if f.endswith('.mlpackage'):
+            print(f"  {f}")
+    
+    for i in range(1, num_chunks + 1):
+        # Check FFN files
+        ffn_file = ffn_template.format(i)
+        if not os.path.exists(ffn_file):
+            missing_files.append(ffn_file)
+            
+        # Check prefill files
+        pf_file = pf_template.format(i)
+        if not os.path.exists(pf_file):
+            missing_files.append(pf_file)
     
     if missing_files:
         print("\nError: The following required files are missing:")
@@ -122,78 +136,65 @@ def validate_chunk_files(num_chunks, lut_bits=None, mode=None, prefix='llama'):
     return True
 
 def combine_chunks(num_chunks, lut_bits=None, mode=None, prefix='llama'):
-    """Combine model chunks."""
+    """Combine FFN and prefill models into chunks."""
     try:
-        # Process each chunk
+        # Use same naming pattern as validate_chunk_files
+        if lut_bits:
+            ffn_template = f"{prefix}_FFN_lut{lut_bits}_chunk_{{:02d}}of{num_chunks:02d}.mlpackage"
+            pf_template = f"{prefix}_prefill_lut{lut_bits}_chunk_{{:02d}}of{num_chunks:02d}.mlpackage"
+            combined_template = f"{prefix}_FFN_PF_lut{lut_bits}_chunk_{{:02d}}of{num_chunks:02d}.mlpackage"
+        else:
+            ffn_template = f"{prefix}_FFN_chunk_{{:02d}}of{num_chunks:02d}.mlpackage"
+            pf_template = f"{prefix}_prefill_chunk_{{:02d}}of{num_chunks:02d}.mlpackage"
+            combined_template = f"{prefix}_FFN_PF_chunk_{{:02d}}of{num_chunks:02d}.mlpackage"
+        
         for chunk_idx in range(num_chunks):
-            print(f"\nProcessing chunk {chunk_idx+1}/{num_chunks}")
-            
             try:
-                # Get current working directory
-                cwd = os.getcwd()
+                # Get input model paths
+                ffn_path = ffn_template.format(chunk_idx + 1)
+                prefill_path = pf_template.format(chunk_idx + 1)
+                output_path = combined_template.format(chunk_idx + 1)
+                temp_path = f"temp_{output_path}"
                 
-                # Construct model paths with full paths
-                lut_suffix = f"_lut{lut_bits}" if lut_bits else ""
-                ffn_path = os.path.join(cwd, f"{prefix}_FFN{lut_suffix}_chunk_{chunk_idx+1:02d}of{num_chunks:02d}.mlpackage")
-                prefill_path = os.path.join(cwd, f"{prefix}_prefill{lut_suffix}_chunk_{chunk_idx+1:02d}of{num_chunks:02d}.mlpackage")
+                print(f"\nProcessing chunk {chunk_idx+1}:")
+                print(f"  FFN: {ffn_path}")
+                print(f"  Prefill: {prefill_path}")
+                print(f"  Output: {output_path}")
                 
-                # Use FFN_PF instead of 2 in output filename
-                output_path = os.path.join(cwd, f"{prefix}_FFN_PF{lut_suffix}_chunk_{chunk_idx+1:02d}of{num_chunks:02d}.mlpackage")
+                # Load models
+                ffn_model = ct.models.MLModel(ffn_path)
+                prefill_model = ct.models.MLModel(prefill_path)
                 
-                print("\nDEBUG: Loading source models...")
-                # Load source models for metadata
-                print(f"Reading metadata from FFN model: {ffn_path}")
-                ffn_model = ct.models.MLModel(ffn_path, skip_model_load=True)  # Only load metadata
-                print("DEBUG: FFN model loaded")
-                
-                print(f"Reading metadata from prefill model: {prefill_path}")
-                prefill_model = ct.models.MLModel(prefill_path, skip_model_load=True)  # Only load metadata
-                print("DEBUG: Prefill model loaded")
-                
-                print("\nDEBUG: Creating multifunction descriptor...")
+                # Create combined model
                 desc = ct.utils.MultiFunctionDescriptor()
-                
-                # Add models with their metadata
-                print(f"Adding FFN model as 'infer' function")
                 desc.add_function(ffn_path, "main", "infer")
-                
-                print(f"Adding prefill model as 'prefill' function")
                 desc.add_function(prefill_path, "main", "prefill")
-                
-                # Set default function
                 desc.default_function_name = "infer"
                 
-                # Save combined model
-                tmp_path = "_tmp_combined_model.mlpackage"
-                print(f"\nDEBUG: Saving combined model to: {tmp_path}")
-                ct.utils.save_multifunction(desc,tmp_path)
-                print("DEBUG: Initial save completed")
+                print("Creating combined model...")
+                ct.utils.save_multifunction(desc, temp_path)
                 
-                # Load the combined model with specific function
-                print("\nDEBUG: Loading model to add metadata...")
-                combined_model = ct.models.MLModel(tmp_path, 
-                                                 function_name="infer",  # Load prefill function
-                                                 is_temp_package=True,    # Not a temporary package
-                                                 compute_units=ct.ComputeUnit.CPU_AND_NE,  # Enable ANE
-                                                 skip_model_load=True)    # Load full model
-                print("DEBUG: Model loaded")
+                # Load the temp model to add metadata
+                print("Loading combined model...")
+                combined_model = ct.models.MLModel(temp_path)
+                if combined_model is None:
+                    raise ValueError(f"Failed to load combined model")
                 
-                # Add metadata and save
-                print("\nDEBUG: Adding combined metadata...")
+                # Add metadata and save final
+                print("Adding metadata...")
                 AddCombinedMetadata(combined_model, [ffn_model, prefill_model])
-                print("DEBUG: Metadata added")
-                
-                output_path = f"{prefix}_FFN_PF{lut_suffix}_chunk_{chunk_idx+1:02d}of{num_chunks:02d}.mlpackage"
-                print(f"\nDEBUG: Saving final model to: {output_path}")
+                print(f"Saving final model to: {output_path}")
                 combined_model.save(output_path)
-                print("DEBUG: Final save completed")
+                
+                # Clean up temp file
+                import shutil
+                shutil.rmtree(temp_path, ignore_errors=True)
                 
                 print(f"Successfully combined chunk {chunk_idx+1}")
                 
             except Exception as e:
                 print(f"\nError processing chunk {chunk_idx+1}: {str(e)}")
                 import traceback
-                print("\nFull traceback:")
                 traceback.print_exc()
                 return False
                 
@@ -202,67 +203,79 @@ def combine_chunks(num_chunks, lut_bits=None, mode=None, prefix='llama'):
     except Exception as e:
         print(f"\nError during combination process: {str(e)}")
         import traceback
-        print("\nFull traceback:")
         traceback.print_exc()
         return False
 
-if __name__ == "__main__":
-    # Check if we're using the new model combination format
-    if len(sys.argv) > 1 and '=' in sys.argv[1]:
-        models_dict = parse_model_args(sys.argv[1:])
-        if not combine_models_custom(models_dict):
-            print("\nUsage examples:")
-            print("1. Combine specific models:")
-            print("   python combine_models.py name1=model1.mlpackage func1=func1 name2=model2.mlpackage func2=func2")
-            print("\n2. Combine LUT models:")
-            print("   python combine_models.py --chunk 2 --lut 6")
-            sys.exit(1)
+def parse_args():
+    parser = argparse.ArgumentParser(description='Combine FFN and prefill models')
+    parser.add_argument('--lut', type=int, help='LUT bits used in quantization (optional)')
+    parser.add_argument('--chunk', type=int, required=True,
+                      help='Number of chunks')
+    parser.add_argument('--input', type=str, default='.',
+                      help='Input directory containing model files (default: current directory)')
+    parser.add_argument('--output', type=str, default=None,
+                      help='Output directory for combined models (default: same as input)')
+    parser.add_argument('--prefix', type=str, default='llama',
+                      help='Prefix for model names (default: llama)')
+    return parser.parse_args()
+
+def get_model_names(args):
+    """Get input and output model names based on LUT setting"""
+    if args.lut:
+        ffn_template = f"{args.prefix}_FFN_lut{args.lut}_chunk_{{:02d}}of{args.chunk:02d}.mlpackage"
+        pf_template = f"{args.prefix}_PF_lut{args.lut}_chunk_{{:02d}}of{args.chunk:02d}.mlpackage"
+        combined_template = f"{args.prefix}_FFN_PF_lut{args.lut}_chunk_{{:02d}}of{args.chunk:02d}.mlpackage"
+    else:
+        ffn_template = f"{args.prefix}_FFN_chunk_{{:02d}}of{args.chunk:02d}.mlpackage"
+        pf_template = f"{args.prefix}_prefill_chunk_{{:02d}}of{args.chunk:02d}.mlpackage"
+        combined_template = f"{args.prefix}_FFN_PF_chunk_{{:02d}}of{args.chunk:02d}.mlpackage"
+    return ffn_template, pf_template, combined_template
+
+def combine_models(args):
+    input_dir = Path(args.input)
+    output_dir = Path(args.output) if args.output else input_dir
     
-    # Parse command line arguments
-    lut_bits = None
-    num_chunks = None
-    mode = None
-    prefix = 'llama'  # default prefix
+    # Ensure output directory exists
+    output_dir.mkdir(parents=True, exist_ok=True)
     
-    i = 1
-    while i < len(sys.argv):
-        if sys.argv[i] == '--lut':
-            lut_bits = int(sys.argv[i + 1])
-            i += 2
-        elif sys.argv[i] == '--chunk':
-            num_chunks = int(sys.argv[i + 1])
-            i += 2
-        elif sys.argv[i] == '--mode':
-            mode = sys.argv[i + 1]
-            if mode not in ['FFN', 'prefill']:
-                print("Error: mode must be 'FFN' or 'prefill'")
-                sys.exit(1)
-            i += 2
-        elif sys.argv[i] == '--prefix':
-            prefix = sys.argv[i + 1]
-            i += 2
-        else:
-            print(f"Unknown option: {sys.argv[i]}")
-            print("\nUsage:")
-            print("  python combine_models.py --chunk N [--lut N] [--mode FFN|prefill] [--prefix name]")
-            print("\nOptions:")
-            print("  --chunk N    Number of chunks to combine")
-            print("  --lut N      LUT quantization bits (optional)")
-            print("  --mode X     Mode: FFN or prefill (optional)")
-            print("  --prefix X   Model name prefix (default: llama)")
-            print("\nExamples:")
-            print("  python combine_models.py --chunk 2 --lut 6")
-            print("  python combine_models.py --chunk 2 --lut 6 --mode FFN")
-            print("  python combine_models.py --chunk 2 --prefix llama32")
-            sys.exit(1)
+    # First validate all files exist
+    if not validate_chunk_files(args.chunk, args.lut, None, args.prefix):
+        raise FileNotFoundError("Missing required model files")
     
-    if num_chunks is None:
-        print("Error: --chunk argument is required")
-        sys.exit(1)
-        
     # Combine the chunks
-    if combine_chunks(num_chunks, lut_bits, mode, prefix):
+    if combine_chunks(args.chunk, args.lut, None, args.prefix):
         print("\nAll chunks combined successfully!")
+        return True
     else:
         print("\nCombination process failed.")
-        sys.exit(1) 
+        return False
+
+def main():
+    args = parse_args()
+    try:
+        # Change to input directory for processing
+        orig_dir = os.getcwd()
+        os.chdir(args.input)
+        
+        # Run combination
+        success = combine_models(args)
+        
+        # Move files if needed
+        if success and args.output and args.input != args.output:
+            output_dir = Path(args.output)
+            for chunk in range(1, args.chunk + 1):
+                combined_file = f"{args.prefix}_FFN_PF_lut{args.lut}_chunk_{chunk:02d}of{args.chunk:02d}.mlpackage"
+                if os.path.exists(combined_file):
+                    os.rename(combined_file, output_dir / combined_file)
+        
+        # Return to original directory
+        os.chdir(orig_dir)
+        
+        sys.exit(0 if success else 1)
+        
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        sys.exit(1)
+
+if __name__ == '__main__':
+    main() 

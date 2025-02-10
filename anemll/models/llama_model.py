@@ -846,7 +846,6 @@ class LlamaModel(BaseModel):
             print(f"rotary_emb.shape={rotary_emb[0].shape}")
             print("[process_layer_prefill] causal_mask.shape=", causal_mask.shape)
 
-
         # Get query, key and value states for prefill
         query_states, key_states, value_states = layer.self_attn.get_new_kv_cache_prefill(
             normalized_states,
@@ -886,9 +885,14 @@ class LlamaModel(BaseModel):
 
         hidden_states = hidden_states + attn_output
 
-        # Add post-attention normalization and MLP
-        post_attn = layer.post_attention_layernorm(hidden_states)
-        hidden_states = hidden_states + layer.mlp(post_attn)
+        # Skip MLP for last layer in prefill mode since output isn't used
+        is_last_layer = (layer_idx == len(self.layers) - 1)
+        if not is_last_layer:
+            # Add post-attention normalization and MLP
+            post_attn = layer.post_attention_layernorm(hidden_states)
+            hidden_states = hidden_states + layer.mlp(post_attn)
+        else:
+            print("Skipping MLP for last layer in prefill mode")
 
         if ENABLE_VALUES:
             print("BATCH------------------------------------------------------------------------------------------------- ")
@@ -1031,13 +1035,17 @@ class LlamaModel(BaseModel):
 
         # Apply final normalization if this is the last block
         if end_layer is None or end_layer == len(self.layers):
-            if ENABLE_VALUES:
+            if IN_PREFILL:
+                print("Skipping final normalization for prefill, data not used!")
+                # return first batch only to mimizie memory usage and avoid optimization!
+                return hidden_states[:,0:1,:]
+            else:
+                if ENABLE_VALUES:
                     print(f"LlamaModel.forward b4 self.norm hidden_states last 10: {hidden_states[-1, -1, -10:].tolist()}")
-            hidden_states = self.norm(hidden_states)
-            if ENABLE_VALUES:
-                    print(f"LlamaModel.forward AFTER self.norm hidden_states last 10: {hidden_states[-1, -1, -10:].tolist()}")
+                hidden_states = self.norm(hidden_states)
+                if ENABLE_VALUES:
+                    print(f"LlamaModel.forward AFTER self.norm hiddhistoryen_states last 10: {hidden_states[-1, -1, -10:].tolist()}")
 
-            #exit() #dessa123 - debug single layer!
         return hidden_states
 
     #LlamaModel.forward_prefill
