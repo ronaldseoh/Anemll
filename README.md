@@ -11,6 +11,7 @@ We aim to:
 - Provide flexible and easy to use library/framework to port LLMs to ANE directly from Hugging Face models
 - Provide on-device examples for iOS and macOS swift or C/C++ Applications
 
+See [Roadmap.md](./docs/Roadmap.md) for more details
 
 > [!Important]
 > This is Alpha Release 0.1.1 for the library. It is designed to process Model Weights directly from Hugging Face models and convert them to the CoreML format for Apple Neural Engine (ANE for short).
