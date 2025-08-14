@@ -68,7 +68,7 @@ if [ "$SKIP_CHECK" = false ]; then
     fi
 
     # Check coremltools version
-    coremltools_version=$(pip show coremltools | grep Version | awk '{print $2}')
+    coremltools_version=$(uv pip show coremltools | grep Version | awk '{print $2}')
     coremltools_major_version=$(echo "$coremltools_version" | cut -d. -f1)
     if [ "$coremltools_major_version" -lt 8 ]; then
         echo "coremltools version 8.x or higher is required. Aborting. (Issue #9)"
