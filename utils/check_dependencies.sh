@@ -58,10 +58,10 @@ if [ "$SKIP_CHECK" = false ]; then
     command -v python >/dev/null 2>&1 || { echo >&2 "Python is required but it's not installed. Aborting. (Issue #1)"; echo "Please refer to the troubleshooting guide in docs/troubleshooting.md for more information."; exit 1; }
 
     echo "Checking if pip is installed..."
-    command -v pip >/dev/null 2>&1 || { echo >&2 "pip is required but it's not installed. Aborting. (Issue #2)"; echo "Please refer to the troubleshooting guide in docs/troubleshooting.md for more information."; exit 1; }
+    command -v uv pip >/dev/null 2>&1 || { echo >&2 "pip is required but it's not installed. Aborting. (Issue #2)"; echo "Please refer to the troubleshooting guide in docs/troubleshooting.md for more information."; exit 1; }
 
     echo "Checking if coremltools is installed via pip..."
-    if ! pip show coremltools >/dev/null 2>&1; then
+    if ! uv pip show coremltools >/dev/null 2>&1; then
         echo "coremltools is required but not installed via pip. Aborting. (Issue #3)"
         echo "Please refer to the troubleshooting guide in docs/troubleshooting.md for more information."
         exit 1
